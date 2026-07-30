@@ -12,7 +12,7 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
     return (
       <div className="match-modal-overlay" style={overlayStyle}>
         <div className="registration-card match-modal-content" style={modalContentStyle}>
-          <h2>No Matches Found / কোনো মিল পাওয়া যায়নি</h2>
+          <h2>No Matches Found / কোনো মিল পাওয়া যায়নি</h2>
           <p className="card-subtitle">On-device matching did not detect any registered members matching this face descriptor.</p>
           <button className="submit-btn" onClick={onClose} style={{ width: '100%' }}>Close / বন্ধ করুন</button>
         </div>
@@ -20,19 +20,16 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
     );
   }
 
-  const currentMatch = matches[currentIndex];
-  const { person, confidence } = currentMatch;
+  const candidate = matches[currentIndex];
+  const { id: personId, confidence, revealed } = candidate;
   const confidencePct = Math.round(confidence * 100);
 
   // Confidence color matching
   let confidenceColor = 'var(--accent-rose)';
-  let confidenceBg = 'rgba(244, 63, 94, 0.15)';
   if (confidence > 0.75) {
     confidenceColor = 'var(--accent-emerald)';
-    confidenceBg = 'rgba(16, 185, 129, 0.15)';
   } else if (confidence >= 0.5) {
     confidenceColor = 'var(--accent-amber)';
-    confidenceBg = 'rgba(245, 158, 11, 0.15)';
   }
 
   const handleConfirm = async () => {
@@ -43,7 +40,7 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
       if (reportId) {
         // Report already has a real id — confirm straight to Supabase.
         const { error } = await supabase.from('matches').insert({
-          person_id: person.id,
+          person_id: personId,
           report_id: reportId,
           confidence: confidence,
           notified: false
@@ -55,7 +52,7 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
         // Report hasn't synced yet (we're offline) — queue the match and
         // let flushQueue() resolve the report id and push it once online.
         await queueMatch({
-          personId: person.id,
+          personId,
           confidence,
           reportId: null,
           localReportId
@@ -63,7 +60,7 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
         setStatusMessage({ type: 'success', text: '📡 Match confirmed offline. It will sync and notify the family once you’re back online.' });
       }
 
-      setConfirmedMatchIds(prev => new Set(prev).add(person.id));
+      setConfirmedMatchIds(prev => new Set(prev).add(personId));
 
       // Move to next after short delay or close if it was the last one
       setTimeout(() => {
@@ -90,7 +87,7 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
 
   const handleReject = () => {
     queueNegativeFeedback({
-      personId: person.id,
+      personId,
       confidence,
       reportId,
       localReportId
@@ -119,26 +116,41 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
           {/* Registered photo */}
           <div className="comparison-pane">
             <h3 style={paneTitleStyle}>Registered Family Member</h3>
-            <img src={person.photo_url} alt="Registered" style={comparisonImageStyle} />
+            {revealed ? (
+              <img src={candidate.signedPhotoUrl} alt="Registered" style={comparisonImageStyle} />
+            ) : (
+              <div style={{ ...comparisonImageStyle, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)', fontSize: '0.8rem', textAlign: 'center', padding: '0.5rem' }}>
+                <span className="spinner">⏳</span>&nbsp;Verifying match…
+              </div>
+            )}
           </div>
         </div>
 
         {/* Info card of registered person */}
         <div className="registered-info-card" style={infoCardStyle}>
-          <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>{person.name}</div>
-          {person.name_bn && <div style={{ color: '#a5b4fc', fontSize: '1rem', marginBottom: '0.5rem' }}>{person.name_bn}</div>}
-          
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-            <div>Age: <strong>{person.age || 'N/A'}</strong></div>
-            <div>Gender: <strong>{person.gender}</strong></div>
-            <div style={{ gridColumn: 'span 2' }}>District: <strong>{person.district || 'N/A'}</strong></div>
-          </div>
+          {revealed ? (
+            <>
+              <div style={{ fontSize: '1.2rem', fontWeight: 'bold' }}>{candidate.name}</div>
+              {candidate.name_bn && <div style={{ color: '#a5b4fc', fontSize: '1rem', marginBottom: '0.5rem' }}>{candidate.name_bn}</div>}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                <div>Age: <strong>{candidate.age || 'N/A'}</strong></div>
+                <div>Gender: <strong>{candidate.gender}</strong></div>
+                <div style={{ gridColumn: 'span 2' }}>District: <strong>{candidate.district || 'N/A'}</strong></div>
+              </div>
+            </>
+          ) : (
+            <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+              Server is re-verifying this match before revealing who it might be
+              {!navigator.onLine && ' — will continue once you\'re back online'}.
+            </div>
+          )}
         </div>
 
         {/* Match confidence bar */}
         <div style={{ margin: '1.5rem 0' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.9rem' }}>
-            <span>Match Confidence:</span>
+            <span>Match Confidence (on-device):</span>
             <strong style={{ color: confidenceColor }}>{confidencePct}% Match</strong>
           </div>
           <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.05)', borderRadius: '50px', overflow: 'hidden' }}>
@@ -154,27 +166,27 @@ export default function MatchResult({ matches, reportId, localReportId, foundPho
 
         {/* Actions buttons */}
         <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem' }}>
-          <button 
-            className="secondary-btn" 
-            onClick={handleReject} 
-            disabled={saving || confirmedMatchIds.has(person.id)}
+          <button
+            className="secondary-btn"
+            onClick={handleReject}
+            disabled={saving || confirmedMatchIds.has(personId)}
             style={{ flex: 1, borderColor: 'var(--accent-rose)', color: '#fda4af' }}
           >
-            ❌ Not a Match / মিল নয়
+            ❌ Not a Match / মিল নয়
           </button>
-          <button 
-            className="submit-btn" 
-            onClick={handleConfirm} 
-            disabled={saving || confirmedMatchIds.has(person.id)}
+          <button
+            className="submit-btn"
+            onClick={handleConfirm}
+            disabled={saving || !revealed || confirmedMatchIds.has(personId)}
             style={{ flex: 1, background: 'var(--accent-emerald)', boxShadow: '0 4px 12px rgba(16, 185, 129, 0.2)' }}
           >
             {saving ? 'Confirming...' : '✅ Confirm Match / নিশ্চিত'}
           </button>
         </div>
 
-        <button 
-          className="secondary-btn" 
-          onClick={onClose} 
+        <button
+          className="secondary-btn"
+          onClick={onClose}
           style={{ width: '100%', marginTop: '1rem' }}
         >
           Close Match Review

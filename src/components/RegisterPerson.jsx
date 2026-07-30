@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { computeDescriptor } from '../lib/faceMatch';
 import { queueRegistration, uploadPhoto } from '../lib/offlineQueue';
 
-export default function RegisterPerson({ onRegisterSuccess }) {
+export default function RegisterPerson({ onRegisterSuccess, session }) {
   const [form, setForm] = useState({
     name: '',
     name_bn: '',
@@ -72,10 +72,13 @@ export default function RegisterPerson({ onRegisterSuccess }) {
     const isOnline = navigator.onLine;
 
     try {
+      const registeredBy = session?.user?.id;
+
       if (isOnline) {
         setStatusMessage({ type: 'info', text: 'Uploading photo and registering...' });
-        // Upload photo to Supabase storage
-        const publicUrl = await uploadPhoto(imagePreview, imageFile.name);
+        // Upload photo to the private person-photos bucket — returns a
+        // storage path, not a public URL (only the owner can sign it later).
+        const photoPath = await uploadPhoto(imagePreview, imageFile.name, 'person-photos');
 
         // Save row to supabase database
         const { error } = await supabase.from('persons').insert({
@@ -84,9 +87,10 @@ export default function RegisterPerson({ onRegisterSuccess }) {
           age: form.age ? parseInt(form.age, 10) : null,
           gender: form.gender,
           district: form.district,
-          photo_url: publicUrl,
+          photo_url: photoPath,
           face_descriptor: descriptor,
-          telegram_chat_id: form.telegram_chat_id
+          telegram_chat_id: form.telegram_chat_id,
+          registered_by: registeredBy
         });
 
         if (error) throw error;
@@ -103,7 +107,8 @@ export default function RegisterPerson({ onRegisterSuccess }) {
           photoData: imagePreview,
           photoName: imageFile.name,
           face_descriptor: descriptor,
-          telegram_chat_id: form.telegram_chat_id
+          telegram_chat_id: form.telegram_chat_id,
+          registered_by: registeredBy
         });
 
         setStatusMessage({ 

@@ -1,4 +1,5 @@
 import * as faceapi from 'face-api.js';
+export { matchAgainstRegistry } from './matching';
 
 const MODEL_URL = '/models';
 let modelsLoaded = false;
@@ -44,20 +45,4 @@ export async function computeDescriptor(imageElement) {
   if (fallbackDetection) return Array.from(fallbackDetection.descriptor);
 
   return null;
-}
-
-export function matchAgainstRegistry(foundDescriptor, registeredPersons) {
-  const queryDescriptor = new Float32Array(foundDescriptor);
-
-  return registeredPersons
-    .filter(person => person.face_descriptor)
-    .map(person => {
-      const storedDescriptor = new Float32Array(person.face_descriptor);
-      const distance = faceapi.euclideanDistance(queryDescriptor, storedDescriptor);
-      const confidence = Math.max(0, 1 - distance / 0.6);
-      return { person, confidence };
-    })
-    .filter(result => result.confidence > 0.4)
-    .sort((a, b) => b.confidence - a.confidence)
-    .slice(0, 5);
 }

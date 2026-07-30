@@ -100,23 +100,24 @@ export async function queueNegativeFeedback({ personId, confidence, reportId = n
   });
 }
 
-// Replace the local persons cache with the latest registry snapshot so
-// face matching can run against it while offline.
-export async function cachePersons(persons) {
+// Replace the local descriptor-only cache ({id, face_descriptor} entries
+// from the get_match_registry() RPC — no names/photos/PII) so on-device
+// face matching keeps working while offline.
+export async function cacheMatchRegistry(entries) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORES.personsCache, 'readwrite');
     const store = tx.objectStore(STORES.personsCache);
     store.clear();
-    for (const person of persons) {
-      if (person && person.id) store.put(person);
+    for (const entry of entries) {
+      if (entry && entry.id) store.put(entry);
     }
     tx.oncomplete = resolve;
     tx.onerror = reject;
   });
 }
 
-export async function getCachedPersons() {
+export async function getCachedMatchRegistry() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const req = db.transaction(STORES.personsCache).objectStore(STORES.personsCache).getAll();
@@ -150,8 +151,11 @@ export async function getPendingCounts() {
   });
 }
 
-// Upload photo helper (used during sync or normal flows)
-export async function uploadPhoto(fileData, fileName) {
+// Upload photo helper (used during sync or normal flows). 'photos' is
+// public (reports shown on the crisis map) and returns a usable public
+// URL. 'person-photos' is private — the caller stores the returned path
+// and generates a signed URL for it later, only for the owning account.
+export async function uploadPhoto(fileData, fileName, bucket = 'photos') {
   // fileData can be a Blob, File, or base64 string
   let body = fileData;
 
@@ -162,8 +166,8 @@ export async function uploadPhoto(fileData, fileName) {
   }
 
   const cleanFileName = `${Date.now()}_${fileName || 'photo.jpg'}`;
-  const { data, error } = await supabase.storage
-    .from('photos')
+  const { error } = await supabase.storage
+    .from(bucket)
     .upload(cleanFileName, body, {
       contentType: 'image/jpeg',
       upsert: true
@@ -171,8 +175,10 @@ export async function uploadPhoto(fileData, fileName) {
 
   if (error) throw error;
 
+  if (bucket !== 'photos') return cleanFileName;
+
   const { data: publicUrlData } = supabase.storage
-    .from('photos')
+    .from(bucket)
     .getPublicUrl(cleanFileName);
 
   return publicUrlData.publicUrl;
@@ -220,7 +226,7 @@ async function runFlush() {
     try {
       let photoUrl = reg.photo_url;
       if (reg.photoData) {
-        photoUrl = await uploadPhoto(reg.photoData, reg.photoName || 'offline_registration.jpg');
+        photoUrl = await uploadPhoto(reg.photoData, reg.photoName || 'offline_registration.jpg', 'person-photos');
       }
 
       const row = {
@@ -231,7 +237,8 @@ async function runFlush() {
         district: reg.district,
         photo_url: photoUrl,
         face_descriptor: reg.face_descriptor,
-        telegram_chat_id: reg.telegram_chat_id
+        telegram_chat_id: reg.telegram_chat_id,
+        registered_by: reg.registered_by
       };
 
       const { error } = await supabase.from('persons').insert(row);

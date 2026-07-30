@@ -1,8 +1,23 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { computeDescriptor, matchAgainstRegistry } from '../lib/faceMatch';
-import { queueReport, uploadPhoto, cachePersons, getCachedPersons } from '../lib/offlineQueue';
+import { queueReport, uploadPhoto, cacheMatchRegistry, getCachedMatchRegistry } from '../lib/offlineQueue';
 import MatchResult from './MatchResult';
+
+// Ask the server to re-verify these candidates against their real stored
+// descriptors and, only for genuine matches, return display info + a
+// short-lived signed photo URL. Never trust a client-computed confidence
+// for what gets revealed — the server recomputes it independently.
+async function revealCandidates(queryDescriptor, personIds) {
+  const res = await fetch('/api/reveal-match', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ queryDescriptor, personIds }),
+  });
+  if (!res.ok) throw new Error(`Reveal failed: ${res.status}`);
+  const { candidates } = await res.json();
+  return candidates || [];
+}
 
 export default function ReportFound({ onReportSuccess }) {
   const [form, setForm] = useState({
@@ -20,15 +35,42 @@ export default function ReportFound({ onReportSuccess }) {
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
-  
+
   // Matching States
   const [showMatches, setShowMatches] = useState(false);
   const [candidateMatches, setCandidateMatches] = useState([]);
+  const [pendingReveal, setPendingReveal] = useState(null); // { queryDescriptor, personIds } while offline
   const [createdReportId, setCreatedReportId] = useState(null);
   const [createdLocalReportId, setCreatedLocalReportId] = useState(null);
   const [createdPhotoUrl, setCreatedPhotoUrl] = useState(null);
 
   const fileInputRef = useRef(null);
+
+  const runReveal = useCallback(async (queryDescriptor, personIds) => {
+    try {
+      const revealed = await revealCandidates(queryDescriptor, personIds);
+      const byId = new Map(revealed.map(r => [r.id, r]));
+      setCandidateMatches(prev => prev.map(c => byId.has(c.id) ? { ...c, ...byId.get(c.id), revealed: true } : c));
+      setPendingReveal(null);
+    } catch (err) {
+      console.error('Failed to reveal match candidates:', err);
+    }
+  }, []);
+
+  // If a match was found while offline, reveal identity/photo as soon as
+  // connectivity returns (the component must stay mounted to catch this).
+  useEffect(() => {
+    if (!pendingReveal) return;
+    function onOnline() {
+      runReveal(pendingReveal.queryDescriptor, pendingReveal.personIds);
+    }
+    if (navigator.onLine) {
+      onOnline();
+      return;
+    }
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [pendingReveal, runReveal]);
 
   // Autofill current device coordinates
   const handleGetLocation = () => {
@@ -107,11 +149,30 @@ export default function ReportFound({ onReportSuccess }) {
     const lngVal = form.location_lng ? parseFloat(form.location_lng) : null;
 
     try {
+      // Matching always runs on-device against the descriptor-only cache
+      // (id + face_descriptor, no PII) — works fully offline. Online, we
+      // refresh that cache first so brand-new registrations are included.
+      let registry;
+      if (isOnline) {
+        const { data, error } = await supabase.rpc('get_match_registry');
+        if (!error && data) {
+          cacheMatchRegistry(data).catch(err => console.error('Failed to cache match registry:', err));
+          registry = data;
+        } else {
+          registry = await getCachedMatchRegistry();
+        }
+      } else {
+        registry = await getCachedMatchRegistry();
+      }
+
+      const localMatches = matchAgainstRegistry(descriptor, registry);
+      const candidates = localMatches.map(m => ({ id: m.entry.id, confidence: m.confidence, revealed: false }));
+      const personIds = candidates.map(c => c.id);
+
       if (isOnline) {
         setStatusMessage({ type: 'info', text: 'Uploading photo and reporting...' });
         const publicUrl = await uploadPhoto(imagePreview, imageFile.name);
 
-        // 1. Submit report to Supabase
         const { data: insertedReport, error } = await supabase
           .from('reports')
           .insert({
@@ -130,28 +191,16 @@ export default function ReportFound({ onReportSuccess }) {
 
         if (error) throw error;
 
-        // 2. Fetch registered persons and run face matching
-        setStatusMessage({ type: 'info', text: 'Running face matching engine...' });
-        const { data: persons, error: personsErr } = await supabase
-          .from('persons')
-          .select('*');
-
-        if (!personsErr && persons) {
-          cachePersons(persons).catch(err => console.error('Failed to cache persons:', err));
-          const matches = matchAgainstRegistry(descriptor, persons);
-          if (matches.length > 0) {
-            setCandidateMatches(matches);
-            setCreatedReportId(insertedReport.id);
-            setCreatedLocalReportId(null);
-            setCreatedPhotoUrl(publicUrl);
-            setShowMatches(true);
-          } else {
-            setStatusMessage({ type: 'success', text: '🎉 Report submitted successfully! No matching faces found in database.' });
-          }
+        if (candidates.length > 0) {
+          setCandidateMatches(candidates);
+          setCreatedReportId(insertedReport.id);
+          setCreatedLocalReportId(null);
+          setCreatedPhotoUrl(publicUrl);
+          setShowMatches(true);
+          runReveal(descriptor, personIds);
         } else {
-          setStatusMessage({ type: 'success', text: '🎉 Report submitted successfully!' });
+          setStatusMessage({ type: 'success', text: '🎉 Report submitted successfully! No matching faces found in registry.' });
         }
-
       } else {
         const localReportId = await queueReport({
           type: 'found',
@@ -166,20 +215,16 @@ export default function ReportFound({ onReportSuccess }) {
           synced: false
         });
 
-        // Matching runs entirely on-device against the persons cached the
-        // last time we were online — no network needed to find a match.
-        const cachedPersons = await getCachedPersons();
-        const matches = matchAgainstRegistry(descriptor, cachedPersons);
-
-        if (matches.length > 0) {
-          setCandidateMatches(matches);
+        if (candidates.length > 0) {
+          setCandidateMatches(candidates);
           setCreatedReportId(null);
           setCreatedLocalReportId(localReportId);
           setCreatedPhotoUrl(imagePreview);
           setShowMatches(true);
+          setPendingReveal({ queryDescriptor: descriptor, personIds });
           setStatusMessage({
             type: 'success',
-            text: '📡 Saved report offline. Match found on-device — review below. It will sync once connection returns.'
+            text: '📡 Saved report offline. Match found on-device — details will reveal once you\'re back online. It will sync automatically.'
           });
         } else {
           setStatusMessage({
@@ -213,7 +258,7 @@ export default function ReportFound({ onReportSuccess }) {
 
   return (
     <div className="registration-card">
-      <h2>Report Found Person / পাওয়া গেছে এমন ব্যক্তি রিপোর্ট করুন</h2>
+      <h2>Report Found Person / পাওয়া গেছে এমন ব্যক্তি রিপোর্ট করুন</h2>
       <p className="card-subtitle">Report someone you have located at a shelter, hospital, or street corner.</p>
 
       <form onSubmit={handleSubmit} className="register-form">
@@ -259,7 +304,7 @@ export default function ReportFound({ onReportSuccess }) {
         </div>
 
         <div className="form-group">
-          <label>Location / আশ্রয়ের নাম বা স্থানের নাম *</label>
+          <label>Location / আশ্রয়ের নাম বা স্থানের নাম *</label>
           <input
             type="text"
             required
@@ -351,6 +396,7 @@ export default function ReportFound({ onReportSuccess }) {
             setCreatedReportId(null);
             setCreatedLocalReportId(null);
             setCreatedPhotoUrl(null);
+            setPendingReveal(null);
           }}
         />
       )}
