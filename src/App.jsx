@@ -9,6 +9,7 @@ import ReportFound from './components/ReportFound';
 import ReportMissing from './components/ReportMissing';
 import CrisisMap from './components/CrisisMap';
 import SyncStatus from './components/SyncStatus';
+import UserManual from './components/UserManual';
 
 const SIGNED_URL_TTL = 3600; // 1 hour, refreshed on every fetch
 
@@ -199,6 +200,13 @@ function App() {
         >
           🗺️ Live Map / ক্রাইসিস ম্যাপ
         </button>
+        <button
+          className={`secondary-btn ${activeTab === 'guide' ? 'active' : ''}`}
+          onClick={() => setActiveTab('guide')}
+          style={activeTab === 'guide' ? { background: 'var(--primary)', borderColor: 'var(--primary)' } : {}}
+        >
+          📖 User Guide / ব্যবহার নির্দেশিকা
+        </button>
       </nav>
 
       {/* Manual Sync Button if online */}
@@ -271,6 +279,10 @@ function App() {
 
       {activeTab === 'map' && (
         <CrisisMap />
+      )}
+
+      {activeTab === 'guide' && (
+        <UserManual />
       )}
     </main>
   );
