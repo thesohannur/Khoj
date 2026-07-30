@@ -69,8 +69,26 @@ export default async function handler(req, res) {
       // 3. Send Telegram notification if chat ID is present
       if (person.telegram_chat_id) {
         console.log(`Sending Telegram alert to Chat ID: ${person.telegram_chat_id}`);
-        await sendTelegramAlert(telegramBotToken, person.telegram_chat_id, person, report, confidence);
-        
+
+        // person.photo_url is a path in the private person-photos bucket,
+        // not a fetchable URL — Telegram's sendPhoto needs a real one it
+        // can reach, so sign it (or fall back to a text-only message).
+        let signedPhotoUrl = null;
+        if (person.photo_url) {
+          const { data: signed } = await supabaseAdmin.storage
+            .from('person-photos')
+            .createSignedUrl(person.photo_url, 300);
+          signedPhotoUrl = signed?.signedUrl || null;
+        }
+
+        await sendTelegramAlert(
+          telegramBotToken,
+          person.telegram_chat_id,
+          { ...person, photo_url: signedPhotoUrl },
+          report,
+          confidence
+        );
+
         // 4. Mark match as notified in database
         await supabaseAdmin
           .from('matches')
