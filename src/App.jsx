@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase';
 import { flushQueue, cacheMatchRegistry } from './lib/offlineQueue';
 import { ensureSession, isRealUser, signOut } from './lib/auth';
 import AuthGate from './components/AuthGate';
+import MatchNotificationBanner from './components/MatchNotificationBanner';
 import RegisterPerson from './components/RegisterPerson';
 import ReportFound from './components/ReportFound';
 import ReportMissing from './components/ReportMissing';
@@ -109,12 +110,20 @@ function App() {
   useEffect(() => {
     if (!session || !isRealUser(session)) {
       setLoading(false);
+      setPersons([]);
       return;
     }
-    if (activeTab === 'register') {
+    // Fetch once as soon as we know who's logged in — not gated to the
+    // register tab, since the match-notification banner needs the list
+    // of "my persons" regardless of which tab is currently open.
+    fetchPersons();
+  }, [session]);
+
+  useEffect(() => {
+    if (session && isRealUser(session) && activeTab === 'register') {
       fetchPersons();
     }
-  }, [session, activeTab === 'register']);
+  }, [activeTab]);
 
   useEffect(() => {
     // Setup network status listeners
@@ -137,6 +146,8 @@ function App() {
 
   return (
     <main className="app-shell">
+      {isRealUser(session) && <MatchNotificationBanner persons={persons} />}
+
       <header className="header">
         <h1>খোজ — KHOJ</h1>
         <p>A distributed missing persons search and matching system for Bangladesh.</p>
