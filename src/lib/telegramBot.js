@@ -9,6 +9,7 @@ export function buildTelegramMessage(person, report, confidence) {
 আপনার নিবন্ধিত পরিবারের সদস্য *${name}* এর সাথে একটি রিপোর্টের ${confidencePct}% মিল পাওয়া গেছে।
 
 📍 *স্থান:* ${location}
+📞 *যিনি খুঁজে পেয়েছেন তার যোগাযোগ:* ${report.reporter_contact || 'প্রদান করা হয়নি'}
 🕐 *সময়:* ${new Date(report.created_at || Date.now()).toLocaleString('bn-BD')}
   `.trim();
 }
