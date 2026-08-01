@@ -55,10 +55,11 @@ function App() {
       }
 
       const withSignedUrls = await Promise.all((data || []).map(async person => {
-        if (!person.photo_url) return person;
+        const displayPath = person.photo_urls?.[person.display_photo_index] ?? person.photo_urls?.[0] ?? person.photo_url;
+        if (!displayPath) return person;
         const { data: signed } = await supabase.storage
           .from('person-photos')
-          .createSignedUrl(person.photo_url, SIGNED_URL_TTL);
+          .createSignedUrl(displayPath, SIGNED_URL_TTL);
         return { ...person, signedPhotoUrl: signed?.signedUrl };
       }));
       setPersons(withSignedUrls);

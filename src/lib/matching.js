@@ -10,19 +10,44 @@ export function euclideanDistance(a, b) {
   return Math.sqrt(sum);
 }
 
-// Compare a found descriptor against a registry of { id, face_descriptor }
-// (or any object with those fields). Returns top candidates sorted by
-// confidence desc, confidence > 0.4 only.
-export function matchAgainstRegistry(foundDescriptor, registry) {
-  const queryDescriptor = Array.from(foundDescriptor);
+function toConfidence(distance) {
+  return Math.max(0, 1 - distance / 0.6);
+}
+
+// Compare every query descriptor (e.g. front + side angles of a found
+// person) against every candidate descriptor (a registered person's own
+// front + side angles) and take the closest pairing — one good angle
+// match is enough, so this only ever helps accuracy, never hurts it.
+export function bestConfidence(queryDescriptors, candidateDescriptors) {
+  let best = 0;
+  for (const q of queryDescriptors) {
+    for (const c of candidateDescriptors) {
+      const confidence = toConfidence(euclideanDistance(q, c));
+      if (confidence > best) best = confidence;
+    }
+  }
+  return best;
+}
+
+// Compare a found descriptor set against a registry of
+// { id, face_descriptors } (or any object with that field). Accepts
+// either a single flat descriptor or an array of up to 3 for
+// `foundDescriptors`. Falls back to a legacy singular `face_descriptor`
+// field on registry entries, so an already-cached IndexedDB entry from
+// before multi-photo support still matches correctly.
+export function matchAgainstRegistry(foundDescriptors, registry) {
+  const queries = (typeof foundDescriptors[0] === 'number' ? [foundDescriptors] : foundDescriptors)
+    .map(d => Array.from(d));
 
   return registry
-    .filter(entry => entry.face_descriptor)
     .map(entry => {
-      const distance = euclideanDistance(queryDescriptor, entry.face_descriptor);
-      const confidence = Math.max(0, 1 - distance / 0.6);
-      return { entry, confidence };
+      const candidates = entry.face_descriptors?.length
+        ? entry.face_descriptors
+        : (entry.face_descriptor ? [entry.face_descriptor] : []);
+      return { entry, candidates };
     })
+    .filter(({ candidates }) => candidates.length > 0)
+    .map(({ entry, candidates }) => ({ entry, confidence: bestConfidence(queries, candidates) }))
     .filter(result => result.confidence > 0.4)
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, 5);

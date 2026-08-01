@@ -1,7 +1,7 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { computeDescriptor } from '../lib/faceMatch';
 import { queueReport, uploadPhoto } from '../lib/offlineQueue';
+import PhotoSlots, { createSlot } from './PhotoSlots';
 
 export default function ReportMissing({ onReportSuccess }) {
   const [form, setForm] = useState({
@@ -12,53 +12,14 @@ export default function ReportMissing({ onReportSuccess }) {
     reporter_contact: ''
   });
 
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [faceStatus, setFaceStatus] = useState('idle'); // idle | processing | detected | error
-  const [descriptor, setDescriptor] = useState(null);
+  const [slots, setSlots] = useState([createSlot('Front photo (required) / সামনের ছবি', true)]);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
-  const fileInputRef = useRef(null);
-
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setImageFile(file);
-    setFaceStatus('processing');
-    setDescriptor(null);
-    setStatusMessage(null);
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setImagePreview(event.target.result);
-
-      const img = new Image();
-      img.src = event.target.result;
-      img.onload = async () => {
-        try {
-          const desc = await computeDescriptor(img);
-          if (desc) {
-            setDescriptor(desc);
-            setFaceStatus('detected');
-          } else {
-            setFaceStatus('error');
-            setStatusMessage({ type: 'error', text: 'No face detected. Try a clearer photo of the person.' });
-          }
-        } catch (err) {
-          console.error(err);
-          setFaceStatus('error');
-          setStatusMessage({ type: 'error', text: 'Error executing face embedding.' });
-        }
-      };
-    };
-    reader.readAsDataURL(file);
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!descriptor) {
-      setStatusMessage({ type: 'error', text: 'A photo with a detected face is required to report a missing person.' });
+    if (slots[0].status !== 'detected') {
+      setStatusMessage({ type: 'error', text: 'A front photo with a detected face is required to report a missing person.' });
       return;
     }
 
@@ -66,18 +27,24 @@ export default function ReportMissing({ onReportSuccess }) {
     setStatusMessage(null);
 
     const isOnline = navigator.onLine;
+    const usableSlots = slots.filter(s => s.status === 'detected');
+    const faceDescriptors = usableSlots.map(s => s.descriptor);
+    const description = `Name: ${form.name}. ${form.description || ''} (Last seen: ${form.last_seen_time})`;
 
     try {
       if (isOnline) {
-        setStatusMessage({ type: 'info', text: 'Uploading photo and reporting...' });
-        const publicUrl = await uploadPhoto(imagePreview, imageFile.name);
+        setStatusMessage({ type: 'info', text: 'Uploading photos and reporting...' });
+        const photoUrls = [];
+        for (const slot of usableSlots) {
+          photoUrls.push(await uploadPhoto(slot.preview, slot.file.name));
+        }
 
         const { error } = await supabase.from('reports').insert({
           type: 'missing',
-          photo_url: publicUrl,
-          face_descriptor: descriptor,
+          photo_urls: photoUrls,
+          face_descriptors: faceDescriptors,
           location_name: form.location_name,
-          description: `Name: ${form.name}. ${form.description || ''} (Last seen: ${form.last_seen_time})`,
+          description,
           reporter_contact: form.reporter_contact,
           synced: true
         });
@@ -87,11 +54,10 @@ export default function ReportMissing({ onReportSuccess }) {
       } else {
         await queueReport({
           type: 'missing',
-          photoData: imagePreview,
-          photoName: imageFile.name,
-          face_descriptor: descriptor,
+          photosData: usableSlots.map(s => ({ data: s.preview, name: s.file.name })),
+          face_descriptors: faceDescriptors,
           location_name: form.location_name,
-          description: `Name: ${form.name}. ${form.description || ''} (Last seen: ${form.last_seen_time})`,
+          description,
           reporter_contact: form.reporter_contact,
           synced: false
         });
@@ -110,10 +76,7 @@ export default function ReportMissing({ onReportSuccess }) {
         description: '',
         reporter_contact: ''
       });
-      setImageFile(null);
-      setImagePreview(null);
-      setFaceStatus('idle');
-      setDescriptor(null);
+      setSlots([createSlot('Front photo (required) / সামনের ছবি', true)]);
       if (onReportSuccess) onReportSuccess();
 
     } catch (err) {
@@ -130,45 +93,12 @@ export default function ReportMissing({ onReportSuccess }) {
       <p className="card-subtitle">Report a family member or friend who is missing.</p>
 
       <form onSubmit={handleSubmit} className="register-form">
-        <div className="form-group photo-upload-group">
-          <label>Photo of Missing Person *</label>
-          <div className="file-dropzone" onClick={() => fileInputRef.current.click()}>
-            {imagePreview ? (
-              <div className="preview-container">
-                <img src={imagePreview} alt="Preview" className="preview-img" />
-                <div className="change-photo-badge">Change Photo</div>
-              </div>
-            ) : (
-              <div className="upload-placeholder">
-                <span className="upload-icon">📷</span>
-                <span>Click to take/upload photo of missing person</span>
-              </div>
-            )}
-          </div>
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-
-          {faceStatus !== 'idle' && (
-            <div className={`face-status-badge ${faceStatus}`}>
-              {faceStatus === 'processing' && (
-                <>
-                  <span className="spinner">⏳</span>
-                  <span>Scanning photo for face structure...</span>
-                </>
-              )}
-              {faceStatus === 'detected' && (
-                <span>✅ Face successfully detected. Ready to match!</span>
-              )}
-              {faceStatus === 'error' && (
-                <span>❌ No face detected. Please select a clearer photo.</span>
-              )}
-            </div>
-          )}
+        <div className="form-group">
+          <label style={{ marginBottom: 0 }}>Photos of Missing Person / ছবি *</label>
+          <p className="help-text" style={{ margin: '-0.25rem 0 0.25rem' }}>
+            Upload up to 3 photos — a front photo is required; adding left/right side angles improves match accuracy.
+          </p>
+          <PhotoSlots slots={slots} onChange={setSlots} />
         </div>
 
         <div className="form-group">
@@ -183,7 +113,7 @@ export default function ReportMissing({ onReportSuccess }) {
         </div>
 
         <div className="form-group">
-          <label>Last Seen Location / শেষবার কোথায় দেখা গেছে *</label>
+          <label>Last Seen Location / শেষবার কোথায় দেখা গেছে *</label>
           <input
             type="text"
             required
@@ -194,7 +124,7 @@ export default function ReportMissing({ onReportSuccess }) {
         </div>
 
         <div className="form-group">
-          <label>Last Seen Time / শেষ দেখার সময়</label>
+          <label>Last Seen Time / শেষ দেখার সময়</label>
           <input
             type="datetime-local"
             value={form.last_seen_time}
@@ -233,7 +163,7 @@ export default function ReportMissing({ onReportSuccess }) {
         <button
           type="submit"
           className="submit-btn"
-          disabled={submitting || faceStatus !== 'detected'}
+          disabled={submitting || slots[0].status !== 'detected'}
         >
           {submitting ? 'Submitting...' : 'Submit Missing Report'}
         </button>

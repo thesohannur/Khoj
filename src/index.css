@@ -247,6 +247,35 @@ input:focus, select:focus, textarea:focus {
   backdrop-filter: blur(4px);
 }
 
+.photo-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.photo-slot-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.display-photo-radio {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.photo-slot-remove {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+}
+
 /* Face recognition process banner */
 .face-status-badge {
   margin-top: 1rem;

@@ -70,14 +70,16 @@ export default async function handler(req, res) {
       if (person.telegram_chat_id) {
         console.log(`Sending Telegram alert to Chat ID: ${person.telegram_chat_id}`);
 
-        // person.photo_url is a path in the private person-photos bucket,
-        // not a fetchable URL — Telegram's sendPhoto needs a real one it
-        // can reach, so sign it (or fall back to a text-only message).
+        // person.photo_urls[display_photo_index] (or the legacy singular
+        // photo_url) is a path in the private person-photos bucket, not a
+        // fetchable URL — Telegram's sendPhoto needs a real one it can
+        // reach, so sign it (or fall back to a text-only message).
+        const displayPath = person.photo_urls?.[person.display_photo_index] ?? person.photo_urls?.[0] ?? person.photo_url;
         let signedPhotoUrl = null;
-        if (person.photo_url) {
+        if (displayPath) {
           const { data: signed } = await supabaseAdmin.storage
             .from('person-photos')
-            .createSignedUrl(person.photo_url, 300);
+            .createSignedUrl(displayPath, 300);
           signedPhotoUrl = signed?.signedUrl || null;
         }
 

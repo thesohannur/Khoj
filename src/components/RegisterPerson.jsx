@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { computeDescriptor } from '../lib/faceMatch';
 import { queueRegistration, uploadPhoto } from '../lib/offlineQueue';
+import PhotoSlots, { createSlot } from './PhotoSlots';
 
 export default function RegisterPerson({ onRegisterSuccess, session }) {
   const [form, setForm] = useState({
@@ -13,56 +13,16 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
     telegram_chat_id: ''
   });
 
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [faceStatus, setFaceStatus] = useState('idle'); // idle | processing | detected | error
-  const [descriptor, setDescriptor] = useState(null);
+  const [slots, setSlots] = useState([createSlot('Front photo (required) / সামনের ছবি', true)]);
+  const [displayId, setDisplayId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
-  const fileInputRef = useRef(null);
-
-  // When a file is selected, read it for preview and run face descriptor calculation
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setImageFile(file);
-    setFaceStatus('processing');
-    setDescriptor(null);
-    setStatusMessage(null);
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setImagePreview(event.target.result);
-      
-      // Load image into an HTMLImageElement to pass to face-api
-      const img = new Image();
-      img.src = event.target.result;
-      img.onload = async () => {
-        try {
-          const desc = await computeDescriptor(img);
-          if (desc) {
-            setDescriptor(desc);
-            setFaceStatus('detected');
-          } else {
-            setFaceStatus('error');
-            setStatusMessage({ type: 'error', text: 'No face detected. Please try a clear front-facing photo with good lighting and the face centered.' });
-          }
-        } catch (err) {
-          console.error('Face processing error:', err);
-          setFaceStatus('error');
-          setStatusMessage({ type: 'error', text: `Face model error: ${err.message || 'Please try again.'}` });
-        }
-      };
-    };
-    reader.readAsDataURL(file);
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!form.name.trim()) return;
-    if (!descriptor) {
-      setStatusMessage({ type: 'error', text: 'Please upload a photo with a valid face first.' });
+    if (slots[0].status !== 'detected') {
+      setStatusMessage({ type: 'error', text: 'Please upload a front photo with a valid face first.' });
       return;
     }
 
@@ -70,25 +30,31 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
     setStatusMessage(null);
 
     const isOnline = navigator.onLine;
+    const registeredBy = session?.user?.id;
+    const usableSlots = slots.filter(s => s.status === 'detected');
+    const displayIndex = Math.max(0, usableSlots.findIndex(s => s.id === displayId));
+    const faceDescriptors = usableSlots.map(s => s.descriptor);
 
     try {
-      const registeredBy = session?.user?.id;
-
       if (isOnline) {
-        setStatusMessage({ type: 'info', text: 'Uploading photo and registering...' });
-        // Upload photo to the private person-photos bucket — returns a
-        // storage path, not a public URL (only the owner can sign it later).
-        const photoPath = await uploadPhoto(imagePreview, imageFile.name, 'person-photos');
+        setStatusMessage({ type: 'info', text: 'Uploading photos and registering...' });
+        // Upload every usable photo to the private person-photos bucket —
+        // returns storage paths, not public URLs (only the owner can sign
+        // them later).
+        const photoUrls = [];
+        for (const slot of usableSlots) {
+          photoUrls.push(await uploadPhoto(slot.preview, slot.file.name, 'person-photos'));
+        }
 
-        // Save row to supabase database
         const { error } = await supabase.from('persons').insert({
           name: form.name,
           name_bn: form.name_bn,
           age: form.age ? parseInt(form.age, 10) : null,
           gender: form.gender,
           district: form.district,
-          photo_url: photoPath,
-          face_descriptor: descriptor,
+          photo_urls: photoUrls,
+          face_descriptors: faceDescriptors,
+          display_photo_index: displayIndex,
           telegram_chat_id: form.telegram_chat_id,
           registered_by: registeredBy
         });
@@ -104,16 +70,16 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
           age: form.age ? parseInt(form.age, 10) : null,
           gender: form.gender,
           district: form.district,
-          photoData: imagePreview,
-          photoName: imageFile.name,
-          face_descriptor: descriptor,
+          photosData: usableSlots.map(s => ({ data: s.preview, name: s.file.name })),
+          face_descriptors: faceDescriptors,
+          display_photo_index: displayIndex,
           telegram_chat_id: form.telegram_chat_id,
           registered_by: registeredBy
         });
 
-        setStatusMessage({ 
-          type: 'success', 
-          text: '📡 Registered offline. Registration saved locally and will sync when internet connection is restored.' 
+        setStatusMessage({
+          type: 'success',
+          text: '📡 Registered offline. Registration saved locally and will sync when internet connection is restored.'
         });
       }
 
@@ -126,10 +92,8 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
         district: '',
         telegram_chat_id: ''
       });
-      setImageFile(null);
-      setImagePreview(null);
-      setFaceStatus('idle');
-      setDescriptor(null);
+      setSlots([createSlot('Front photo (required) / সামনের ছবি', true)]);
+      setDisplayId(null);
       if (onRegisterSuccess) onRegisterSuccess();
 
     } catch (err) {
@@ -144,7 +108,7 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
     <div className="registration-card">
       <h2>Family Registration / পরিবারের সদস্য নিবন্ধন</h2>
       <p className="card-subtitle">Register family members in advance to enable rapid matching during a crisis.</p>
-      
+
       <form onSubmit={handleSubmit} className="register-form">
         <div className="form-group">
           <label>Full Name (English) *</label>
@@ -169,7 +133,7 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
 
         <div className="form-row">
           <div className="form-group half">
-            <label>Age / বয়স</label>
+            <label>Age / বয়স</label>
             <input
               type="number"
               placeholder="Age"
@@ -214,46 +178,18 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
           </small>
         </div>
 
-        <div className="form-group photo-upload-group">
-          <label>Upload Photo / ছবি আপলোড *</label>
-          <div className="file-dropzone" onClick={() => fileInputRef.current.click()}>
-            {imagePreview ? (
-              <div className="preview-container">
-                <img src={imagePreview} alt="Preview" className="preview-img" />
-                <div className="change-photo-badge">Change Photo</div>
-              </div>
-            ) : (
-              <div className="upload-placeholder">
-                <span className="upload-icon">📷</span>
-                <span>Click to take or upload photo</span>
-              </div>
-            )}
-          </div>
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
+        <div className="form-group">
+          <label style={{ marginBottom: 0 }}>Photos / ছবি *</label>
+          <p className="help-text" style={{ margin: '-0.25rem 0 0.25rem' }}>
+            Upload up to 3 photos — a front photo is required; adding left/right side angles improves match accuracy. Pick which one shows in your family list.
+          </p>
+          <PhotoSlots
+            slots={slots}
+            onChange={setSlots}
+            showDisplayPicker
+            displayId={displayId}
+            onDisplayChange={setDisplayId}
           />
-          
-          {/* Face Detection Status Indicator */}
-          {faceStatus !== 'idle' && (
-            <div className={`face-status-badge ${faceStatus}`}>
-              {faceStatus === 'processing' && (
-                <>
-                  <span className="spinner">⏳</span>
-                  <span>Scanning photo for face embeddings...</span>
-                </>
-              )}
-              {faceStatus === 'detected' && (
-                <span>✅ Face successfully detected and embedded!</span>
-              )}
-              {faceStatus === 'error' && (
-                <span>❌ No face detected. Please try another photo.</span>
-              )}
-            </div>
-          )}
         </div>
 
         {statusMessage && (
@@ -262,10 +198,10 @@ export default function RegisterPerson({ onRegisterSuccess, session }) {
           </div>
         )}
 
-        <button 
-          type="submit" 
-          className="submit-btn" 
-          disabled={submitting || faceStatus !== 'detected'}
+        <button
+          type="submit"
+          className="submit-btn"
+          disabled={submitting || slots[0].status !== 'detected'}
         >
           {submitting ? 'Registering...' : 'Register Member'}
         </button>

@@ -70,15 +70,17 @@ export default function CrisisMap() {
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
-            {reports.map(report => (
+            {reports.map(report => {
+              const photoUrl = report.photo_urls?.[0] ?? report.photo_url;
+              return (
               <Marker key={report.id} position={[report.location_lat, report.location_lng]}>
                 <Popup>
                   <div style={{ color: '#111827', fontFamily: 'sans-serif', maxWidth: '200px' }}>
-                    {report.photo_url && (
-                      <img 
-                        src={report.photo_url} 
-                        alt="Reported Person" 
-                        style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }} 
+                    {photoUrl && (
+                      <img
+                        src={photoUrl}
+                        alt="Reported Person"
+                        style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '6px', marginBottom: '0.5rem' }}
                       />
                     )}
                     <h4 style={{ margin: '0 0 0.25rem 0', color: '#1e1b4b' }}>
@@ -93,7 +95,8 @@ export default function CrisisMap() {
                   </div>
                 </Popup>
               </Marker>
-            ))}
+              );
+            })}
           </MapContainer>
         </div>
       )}

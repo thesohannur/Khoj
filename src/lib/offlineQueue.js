@@ -224,9 +224,15 @@ async function runFlush() {
   const pendingRegistrations = await getAllFromStore(db, STORES.registrations);
   for (const reg of pendingRegistrations) {
     try {
-      let photoUrl = reg.photo_url;
-      if (reg.photoData) {
-        photoUrl = await uploadPhoto(reg.photoData, reg.photoName || 'offline_registration.jpg', 'person-photos');
+      // Tolerate both shapes: a registration queued before multi-photo
+      // support shipped still carries the old singular photoData/
+      // face_descriptor fields and must flush correctly too.
+      const photosData = reg.photosData || (reg.photoData ? [{ data: reg.photoData, name: reg.photoName }] : []);
+      const faceDescriptors = reg.face_descriptors || (reg.face_descriptor ? [reg.face_descriptor] : []);
+
+      const photoUrls = [];
+      for (const p of photosData) {
+        photoUrls.push(await uploadPhoto(p.data, p.name || 'offline_registration.jpg', 'person-photos'));
       }
 
       const row = {
@@ -235,8 +241,9 @@ async function runFlush() {
         age: reg.age,
         gender: reg.gender,
         district: reg.district,
-        photo_url: photoUrl,
-        face_descriptor: reg.face_descriptor,
+        photo_urls: photoUrls,
+        face_descriptors: faceDescriptors,
+        display_photo_index: reg.display_photo_index ?? 0,
         telegram_chat_id: reg.telegram_chat_id,
         registered_by: reg.registered_by
       };
@@ -256,15 +263,18 @@ async function runFlush() {
   const pendingReports = await getAllFromStore(db, STORES.reports);
   for (const report of pendingReports) {
     try {
-      let photoUrl = report.photo_url;
-      if (report.photoData) {
-        photoUrl = await uploadPhoto(report.photoData, report.photoName || 'offline_report.jpg');
+      const photosData = report.photosData || (report.photoData ? [{ data: report.photoData, name: report.photoName }] : []);
+      const faceDescriptors = report.face_descriptors || (report.face_descriptor ? [report.face_descriptor] : []);
+
+      const photoUrls = [];
+      for (const p of photosData) {
+        photoUrls.push(await uploadPhoto(p.data, p.name || 'offline_report.jpg'));
       }
 
       const row = {
         type: report.type,
-        photo_url: photoUrl,
-        face_descriptor: report.face_descriptor,
+        photo_urls: photoUrls,
+        face_descriptors: faceDescriptors,
         location_lat: report.location_lat,
         location_lng: report.location_lng,
         location_name: report.location_name,

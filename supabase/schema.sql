@@ -8,18 +8,20 @@ create table persons (
   age integer,
   gender text,
   district text,
-  photo_url text,               -- path in the private person-photos bucket
-  face_descriptor float8[],
+  photo_urls text[] not null default '{}',        -- up to 3 paths in the private person-photos bucket
+  face_descriptors float8[][] not null default '{}', -- one descriptor per photo_urls entry
+  display_photo_index smallint not null default 0,   -- which photo_urls entry shows in list views
   telegram_chat_id text,
   registered_by uuid,           -- auth.uid() of the registering account
   created_at timestamptz default now()
 );
+alter table persons add constraint persons_max_3_photos check (array_length(photo_urls,1) is null or array_length(photo_urls,1) <= 3);
 
 create table reports (
   id uuid primary key default gen_random_uuid(),
   type text not null check (type in ('found', 'missing')),
-  photo_url text,                -- public URL in the photos bucket
-  face_descriptor float8[],
+  photo_urls text[] not null default '{}',         -- up to 3 public URLs in the photos bucket; [0] is primary
+  face_descriptors float8[][] not null default '{}', -- one descriptor per photo_urls entry
   location_lat float8,
   location_lng float8,
   location_name text,
@@ -28,6 +30,7 @@ create table reports (
   synced boolean default false,
   created_at timestamptz default now()
 );
+alter table reports add constraint reports_max_3_photos check (array_length(photo_urls,1) is null or array_length(photo_urls,1) <= 3);
 
 create table matches (
   id uuid primary key default gen_random_uuid(),
@@ -55,13 +58,13 @@ alter table matches enable row level security;
 create policy "authenticated select matches" on matches for select to authenticated using (true);
 create policy "authenticated insert matches" on matches for insert to authenticated with check (true);
 
--- Narrow RPC for the offline-matching cache: id + descriptor only, no PII.
--- Bypasses the persons RLS above (security definer) but only ever
+-- Narrow RPC for the offline-matching cache: id + descriptors only, no
+-- PII. Bypasses the persons RLS above (security definer) but only ever
 -- returns these two columns.
 create or replace function public.get_match_registry()
-returns table (id uuid, face_descriptor float8[])
+returns table (id uuid, face_descriptors float8[][])
 language sql security definer set search_path = public
-as $$ select id, face_descriptor from persons where face_descriptor is not null; $$;
+as $$ select id, face_descriptors from persons where coalesce(array_length(face_descriptors,1),0) > 0; $$;
 revoke all on function public.get_match_registry() from public, anon;
 grant execute on function public.get_match_registry() to authenticated;
 

@@ -1,18 +1,19 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { computeDescriptor, matchAgainstRegistry } from '../lib/faceMatch';
+import { matchAgainstRegistry } from '../lib/faceMatch';
 import { queueReport, uploadPhoto, cacheMatchRegistry, getCachedMatchRegistry } from '../lib/offlineQueue';
+import PhotoSlots, { createSlot } from './PhotoSlots';
 import MatchResult from './MatchResult';
 
 // Ask the server to re-verify these candidates against their real stored
 // descriptors and, only for genuine matches, return display info + a
 // short-lived signed photo URL. Never trust a client-computed confidence
 // for what gets revealed — the server recomputes it independently.
-async function revealCandidates(queryDescriptor, personIds) {
+async function revealCandidates(queryDescriptors, personIds) {
   const res = await fetch('/api/reveal-match', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queryDescriptor, personIds }),
+    body: JSON.stringify({ queryDescriptors, personIds }),
   });
   if (!res.ok) throw new Error(`Reveal failed: ${res.status}`);
   const { candidates } = await res.json();
@@ -28,10 +29,7 @@ export default function ReportFound({ onReportSuccess }) {
     reporter_contact: ''
   });
 
-  const [imageFile, setImageFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [faceStatus, setFaceStatus] = useState('idle'); // idle | processing | detected | error
-  const [descriptor, setDescriptor] = useState(null);
+  const [slots, setSlots] = useState([createSlot('Front photo (required) / সামনের ছবি', true)]);
   const [fetchingLocation, setFetchingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null);
@@ -39,16 +37,14 @@ export default function ReportFound({ onReportSuccess }) {
   // Matching States
   const [showMatches, setShowMatches] = useState(false);
   const [candidateMatches, setCandidateMatches] = useState([]);
-  const [pendingReveal, setPendingReveal] = useState(null); // { queryDescriptor, personIds } while offline
+  const [pendingReveal, setPendingReveal] = useState(null); // { queryDescriptors, personIds } while offline
   const [createdReportId, setCreatedReportId] = useState(null);
   const [createdLocalReportId, setCreatedLocalReportId] = useState(null);
   const [createdPhotoUrl, setCreatedPhotoUrl] = useState(null);
 
-  const fileInputRef = useRef(null);
-
-  const runReveal = useCallback(async (queryDescriptor, personIds) => {
+  const runReveal = useCallback(async (queryDescriptors, personIds) => {
     try {
-      const revealed = await revealCandidates(queryDescriptor, personIds);
+      const revealed = await revealCandidates(queryDescriptors, personIds);
       const byId = new Map(revealed.map(r => [r.id, r]));
       setCandidateMatches(prev => prev.map(c => byId.has(c.id) ? { ...c, ...byId.get(c.id), revealed: true } : c));
       setPendingReveal(null);
@@ -62,7 +58,7 @@ export default function ReportFound({ onReportSuccess }) {
   useEffect(() => {
     if (!pendingReveal) return;
     function onOnline() {
-      runReveal(pendingReveal.queryDescriptor, pendingReveal.personIds);
+      runReveal(pendingReveal.queryDescriptors, pendingReveal.personIds);
     }
     if (navigator.onLine) {
       onOnline();
@@ -98,45 +94,10 @@ export default function ReportFound({ onReportSuccess }) {
     );
   };
 
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setImageFile(file);
-    setFaceStatus('processing');
-    setDescriptor(null);
-    setStatusMessage(null);
-
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setImagePreview(event.target.result);
-
-      const img = new Image();
-      img.src = event.target.result;
-      img.onload = async () => {
-        try {
-          const desc = await computeDescriptor(img);
-          if (desc) {
-            setDescriptor(desc);
-            setFaceStatus('detected');
-          } else {
-            setFaceStatus('error');
-            setStatusMessage({ type: 'error', text: 'No face detected. Try a clearer photo for matching.' });
-          }
-        } catch (err) {
-          console.error(err);
-          setFaceStatus('error');
-          setStatusMessage({ type: 'error', text: 'Error executing face embedding.' });
-        }
-      };
-    };
-    reader.readAsDataURL(file);
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!descriptor) {
-      setStatusMessage({ type: 'error', text: 'A photo with a detected face is required to report a found person.' });
+    if (slots[0].status !== 'detected') {
+      setStatusMessage({ type: 'error', text: 'A front photo with a detected face is required to report a found person.' });
       return;
     }
 
@@ -147,10 +108,12 @@ export default function ReportFound({ onReportSuccess }) {
 
     const latVal = form.location_lat ? parseFloat(form.location_lat) : null;
     const lngVal = form.location_lng ? parseFloat(form.location_lng) : null;
+    const usableSlots = slots.filter(s => s.status === 'detected');
+    const queryDescriptors = usableSlots.map(s => s.descriptor);
 
     try {
       // Matching always runs on-device against the descriptor-only cache
-      // (id + face_descriptor, no PII) — works fully offline. Online, we
+      // (id + face_descriptors, no PII) — works fully offline. Online, we
       // refresh that cache first so brand-new registrations are included.
       let registry;
       if (isOnline) {
@@ -165,20 +128,23 @@ export default function ReportFound({ onReportSuccess }) {
         registry = await getCachedMatchRegistry();
       }
 
-      const localMatches = matchAgainstRegistry(descriptor, registry);
+      const localMatches = matchAgainstRegistry(queryDescriptors, registry);
       const candidates = localMatches.map(m => ({ id: m.entry.id, confidence: m.confidence, revealed: false }));
       const personIds = candidates.map(c => c.id);
 
       if (isOnline) {
-        setStatusMessage({ type: 'info', text: 'Uploading photo and reporting...' });
-        const publicUrl = await uploadPhoto(imagePreview, imageFile.name);
+        setStatusMessage({ type: 'info', text: 'Uploading photos and reporting...' });
+        const photoUrls = [];
+        for (const slot of usableSlots) {
+          photoUrls.push(await uploadPhoto(slot.preview, slot.file.name));
+        }
 
         const { data: insertedReport, error } = await supabase
           .from('reports')
           .insert({
             type: 'found',
-            photo_url: publicUrl,
-            face_descriptor: descriptor,
+            photo_urls: photoUrls,
+            face_descriptors: queryDescriptors,
             location_name: form.location_name,
             location_lat: latVal,
             location_lng: lngVal,
@@ -195,18 +161,18 @@ export default function ReportFound({ onReportSuccess }) {
           setCandidateMatches(candidates);
           setCreatedReportId(insertedReport.id);
           setCreatedLocalReportId(null);
-          setCreatedPhotoUrl(publicUrl);
+          setCreatedPhotoUrl(photoUrls[0]);
           setShowMatches(true);
-          runReveal(descriptor, personIds);
+          runReveal(queryDescriptors, personIds);
         } else {
           setStatusMessage({ type: 'success', text: '🎉 Report submitted successfully! No matching faces found in registry.' });
         }
+
       } else {
         const localReportId = await queueReport({
           type: 'found',
-          photoData: imagePreview,
-          photoName: imageFile.name,
-          face_descriptor: descriptor,
+          photosData: usableSlots.map(s => ({ data: s.preview, name: s.file.name })),
+          face_descriptors: queryDescriptors,
           location_name: form.location_name,
           location_lat: latVal,
           location_lng: lngVal,
@@ -219,9 +185,9 @@ export default function ReportFound({ onReportSuccess }) {
           setCandidateMatches(candidates);
           setCreatedReportId(null);
           setCreatedLocalReportId(localReportId);
-          setCreatedPhotoUrl(imagePreview);
+          setCreatedPhotoUrl(usableSlots[0].preview);
           setShowMatches(true);
-          setPendingReveal({ queryDescriptor: descriptor, personIds });
+          setPendingReveal({ queryDescriptors, personIds });
           setStatusMessage({
             type: 'success',
             text: '📡 Saved report offline. Match found on-device — details will reveal once you\'re back online. It will sync automatically.'
@@ -242,10 +208,7 @@ export default function ReportFound({ onReportSuccess }) {
         description: '',
         reporter_contact: ''
       });
-      setImageFile(null);
-      setImagePreview(null);
-      setFaceStatus('idle');
-      setDescriptor(null);
+      setSlots([createSlot('Front photo (required) / সামনের ছবি', true)]);
       if (onReportSuccess) onReportSuccess();
 
     } catch (err) {
@@ -262,45 +225,12 @@ export default function ReportFound({ onReportSuccess }) {
       <p className="card-subtitle">Report someone you have located at a shelter, hospital, or street corner.</p>
 
       <form onSubmit={handleSubmit} className="register-form">
-        <div className="form-group photo-upload-group">
-          <label>Photo of Found Person *</label>
-          <div className="file-dropzone" onClick={() => fileInputRef.current.click()}>
-            {imagePreview ? (
-              <div className="preview-container">
-                <img src={imagePreview} alt="Preview" className="preview-img" />
-                <div className="change-photo-badge">Change Photo</div>
-              </div>
-            ) : (
-              <div className="upload-placeholder">
-                <span className="upload-icon">📷</span>
-                <span>Click to take/upload photo of found person</span>
-              </div>
-            )}
-          </div>
-          <input
-            type="file"
-            accept="image/*"
-            ref={fileInputRef}
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-
-          {faceStatus !== 'idle' && (
-            <div className={`face-status-badge ${faceStatus}`}>
-              {faceStatus === 'processing' && (
-                <>
-                  <span className="spinner">⏳</span>
-                  <span>Scanning photo for face structure...</span>
-                </>
-              )}
-              {faceStatus === 'detected' && (
-                <span>✅ Face successfully detected. Ready to match!</span>
-              )}
-              {faceStatus === 'error' && (
-                <span>❌ No face detected. Please select a clearer photo.</span>
-              )}
-            </div>
-          )}
+        <div className="form-group">
+          <label style={{ marginBottom: 0 }}>Photos of Found Person / ছবি *</label>
+          <p className="help-text" style={{ margin: '-0.25rem 0 0.25rem' }}>
+            Upload up to 3 photos — a front photo is required; adding left/right side angles improves match accuracy.
+          </p>
+          <PhotoSlots slots={slots} onChange={setSlots} />
         </div>
 
         <div className="form-group">
@@ -377,7 +307,7 @@ export default function ReportFound({ onReportSuccess }) {
         <button
           type="submit"
           className="submit-btn"
-          disabled={submitting || faceStatus !== 'detected'}
+          disabled={submitting || slots[0].status !== 'detected'}
         >
           {submitting ? 'Submitting...' : 'Submit Found Report'}
         </button>
